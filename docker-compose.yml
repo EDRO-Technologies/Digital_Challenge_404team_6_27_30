@@ -1,0 +1,113 @@
+# ГЛАВНЫЙ docker-compose.yml (Версия для разработки Бэкенда)
+# Запускает back, back-ai и базы данных. Фронтенд удален.
+
+services:
+
+  frontend:
+      build:
+        context: ./front
+        dockerfile: Dockerfile
+      container_name: knowledgebot_frontend
+      ports:
+        - "80:80" # Фронтенд будет доступен на http://localhost:3000
+      depends_on:
+        - backend
+      networks:
+        - knowledgebot_net
+  # 1. Бэкенд-сервис (FastAPI - Основная логика)
+  backend:
+    build:
+      context: ./back
+      dockerfile: Dockerfile
+    container_name: knowledgebot_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./back/app:/app/app # Монтируем код для live-reload (удобно для разработки)
+      - file_storage:/app/storage # Том для файлов (RW)
+    env_file:
+      - ./back/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      back-ai:
+        condition: service_started
+    networks:
+      - knowledgebot_net
+
+  # 2. AI-сервис (FastAPI - RAG ядро)
+  back-ai:
+    container_name: knowledgebot_ai_service
+    build:
+      context: ./back-ai
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - file_storage:/app/storage:ro # Тот же том (Read-Only)
+    env_file:
+      - ./back-ai/.env
+    depends_on:
+      chroma:
+        condition: service_started
+      ollama:
+        condition: service_started
+    networks:
+      - knowledgebot_net
+
+  # 3. База данных (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    container_name: knowledgebot_postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - ./back/.env
+    ports:
+      - "5432:5432"
+    networks:
+      - knowledgebot_net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 4. Векторная база данных (ChromaDB)
+  chroma:
+    image: chromadb/chroma:0.5.2
+    container_name: knowledgebot_chroma
+    volumes:
+      - chroma_data:/chroma/.chroma/index
+    ports:
+      - "8002:8000"
+    networks:
+      - knowledgebot_net
+
+  # 5. Сервис LLM (Ollama)
+  ollama:
+    image: ollama/ollama
+    container_name: knowledgebot_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - knowledgebot_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+
+networks:
+  knowledgebot_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  chroma_data:
+  ollama_data:
+  file_storage:
